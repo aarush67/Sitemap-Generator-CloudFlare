@@ -436,7 +436,7 @@ async def crawl_url(args):
                 current_rate = rate_limit_value['value']
             await asyncio.sleep(random.uniform(current_rate, current_rate * 1.5))
             async with session.get(url, timeout=timeout) as response:
-    content_type = response.headers.get('content-type', '').lower()
+                content_type = response.headers.get('content-type', '').lower()
 
     if response.status == 429:
         with rate_limit_lock:
