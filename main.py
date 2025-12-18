@@ -412,78 +412,80 @@ def discover_subdomains(tld, api_token, securitytrails_api_key, session, respect
 
     console.print(f"[info]Discovered {len(subdomains)} subdomains for {tld}[/info]")
     return subdomains
-
 async def crawl_url(args):
-    """Crawl a single URL and return found links, respecting max depth (for multithreading)."""
-    url, visited, collected_urls, collected_urls_lock, root_domain, respect_robots, timeout, progress, progress_lock, max_depth, current_depth, rate_limit_value, rate_limit_lock, log_queue = args
+    (
+        url, visited, collected_urls, collected_urls_lock, root_domain,
+        respect_robots, timeout, progress, progress_lock,
+        max_depth, current_depth, rate_limit_value, rate_limit_lock, log_queue
+    ) = args
+
     logger = logging.getLogger(__name__)
     if log_queue is not None:
         logger.handlers = []
-        queue_handler = QueueHandler(log_queue)
-        queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(queue_handler)
+        qh = QueueHandler(log_queue)
+        qh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(qh)
         logger.setLevel(logging.INFO)
-    
-    async with aiohttp.ClientSession(headers={"User-Agent": get_user_agent()}) as session:
+
+    if url in visited or current_depth > max_depth:
+        return []
+
+    visited.append(url)
+
+    headers = {"User-Agent": get_user_agent()}
+    async with aiohttp.ClientSession(headers=headers) as session:
         try:
-            if url in visited or current_depth > max_depth:
-                logger.debug(f"Skipping URL {url}: already visited or depth {current_depth} > {max_depth}")
-                return []
-
-            visited.append(url)
-            logger.info(f"Crawling (depth {current_depth}): {url}")
             with rate_limit_lock:
-                current_rate = rate_limit_value['value']
-            await asyncio.sleep(random.uniform(current_rate, current_rate * 1.5))
+                delay = rate_limit_value['value']
+            await asyncio.sleep(random.uniform(delay, delay * 1.5))
+
             async with session.get(url, timeout=timeout) as response:
-                content_type = response.headers.get('content-type', '').lower()
-
-    if response.status == 429:
-        with rate_limit_lock:
-            rate_limit_value['value'] = min(2.0, rate_limit_value['value'] * 1.2)
-        logger.warning(f"Rate limit hit for {url}")
-        return []
-
-    if response.status not in (200, 301, 302):
-        return []
-
-    if "text/html" not in content_type:
-        return []
-
-    with rate_limit_lock:
-        rate_limit_value['value'] = max(0.1, rate_limit_value['value'] * 0.95)
-
-    raw = await response.read()
-    text = raw.decode(response.charset or "utf-8", errors="ignore")
+                status = response.status
+                content_type = response.headers.get("content-type", "").lower()
+                raw = await response.read()
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(f"Failed to crawl {url}: {e}")
             return []
 
-        with collected_urls_lock:
-            collected_urls['urls'].append(clean_url(url))
-        if progress is not None:
-            with progress_lock:
-                progress['urls_crawled'] += 1
-        found_urls = []
-        if 'text/html' in content_type:
-            soup = BeautifulSoup(text, 'html.parser')
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                absolute_url = urljoin(url, href)
+    if status == 429:
+        with rate_limit_lock:
+            rate_limit_value['value'] = min(2.0, rate_limit_value['value'] * 1.2)
+        return []
 
-                if not absolute_url.startswith(('http://', 'https://')):
-                    continue
+    if status not in (200, 301, 302) or "text/html" not in content_type:
+        return []
 
-                parsed_url = urlparse(absolute_url)
-                if not parsed_url.netloc.endswith(root_domain):
-                    continue
+    with rate_limit_lock:
+        rate_limit_value['value'] = max(0.1, rate_limit_value['value'] * 0.95)
 
-                cleaned_url = clean_url(absolute_url)
-                if await is_valid_url(cleaned_url, respect_robots, timeout, logger) and cleaned_url not in visited:
-                    found_urls.append((cleaned_url, current_depth + 1))
+    text = raw.decode("utf-8", errors="ignore")
 
-        return found_urls
+    with collected_urls_lock:
+        collected_urls['urls'].append(clean_url(url))
+
+    if progress is not None:
+        with progress_lock:
+            progress['urls_crawled'] += 1
+
+    soup = BeautifulSoup(text, "html.parser")
+    found = []
+
+    for link in soup.find_all("a", href=True):
+        absolute = urljoin(url, link["href"])
+        parsed = urlparse(absolute)
+
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if not parsed.netloc.endswith(root_domain):
+            continue
+
+        cleaned = clean_url(absolute)
+        if cleaned not in visited:
+            found.append((cleaned, current_depth + 1))
+
+    return found
+
 
 def crawl_website(start_urls, root_domain, respect_robots=True, timeout=3, log_queue=None, progress=None, progress_lock=None, use_multithreading=False, max_workers=16, max_depth=5, rate_limit=0.5):
     """Crawl the website and subdomains, using multithreading and async I/O."""
