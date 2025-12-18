@@ -436,19 +436,26 @@ async def crawl_url(args):
                 current_rate = rate_limit_value['value']
             await asyncio.sleep(random.uniform(current_rate, current_rate * 1.5))
             async with session.get(url, timeout=timeout) as response:
-                content_type = response.headers.get('content-type', '').lower()
-                if response.status == 429:
-                    with rate_limit_lock:
-                        rate_limit_value['value'] = min(2.0, rate_limit_value['value'] * 1.2)
-                    logger.warning(f"Rate limit hit for {url}")
-                    return []
-                if response.status not in [200, 301, 302, 403, 404]:
-                    logger.debug(f"Skipping {url}: status {response.status}, content-type {content_type}")
-                    return []
-                with rate_limit_lock:
-                    if rate_limit_value['value'] > 0.1:
-                        rate_limit_value['value'] = max(0.1, rate_limit_value['value'] * 0.95)
-                text = await response.text()
+    content_type = response.headers.get('content-type', '').lower()
+
+    if response.status == 429:
+        with rate_limit_lock:
+            rate_limit_value['value'] = min(2.0, rate_limit_value['value'] * 1.2)
+        logger.warning(f"Rate limit hit for {url}")
+        return []
+
+    if response.status not in (200, 301, 302):
+        return []
+
+    if "text/html" not in content_type:
+        return []
+
+    with rate_limit_lock:
+        rate_limit_value['value'] = max(0.1, rate_limit_value['value'] * 0.95)
+
+    raw = await response.read()
+    text = raw.decode(response.charset or "utf-8", errors="ignore")
+
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(f"Failed to crawl {url}: {e}")
             return []
